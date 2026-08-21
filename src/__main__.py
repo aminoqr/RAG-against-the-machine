@@ -14,12 +14,12 @@ class Cli:
         self, dataset_path: str, k: int = 10, save_directory: str = None
     ) -> None:
         print(
-            f"search _dataset called with dataset_path={dataset_path!r}, "
+            f"search_dataset called with dataset_path={dataset_path!r}, "
             f"k={k}, save_directory={save_directory!r}"
         )
 
     def answer(self, query: str, k: int = 10) -> None:
-        print(f"answer called with query-{query!r}, k={k}")
+        print(f"answer called with query={query!r}, k={k}")
 
     def answer_dataset(
         self,
@@ -39,7 +39,7 @@ class Cli:
     ) -> None:
         print(
             f"evaluate called with "
-            f"student_Search_results_path={student_search_results_path!r} "
+            f"student_search_results_path={student_search_results_path!r} "
             f"dataset_path={dataset_path!r}"
         )
 
