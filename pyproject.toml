@@ -1,0 +1,13 @@
+[project]
+name = "rag-against-the-machine"
+version = "0.1.0"
+description = "RAG system over the vLLM codebase"
+requires-python = ">=3.10"
+dependencies = [
+    "fire>=0.6.0",
+    "tqdm>=4.66.0",
+    "pydantic>=2.0.0",
+]
+
+[tool.uv]
+package = false
