@@ -30,6 +30,7 @@ EXCLUDED_DIR_NAMES = {
     "tests",    # ground truth never points here for this corpus
 }
 
+
 def discover_corpus_files(root: Path) -> list[tuple[Path, ChunkerKind]]:
     """Walk 'root' and return (file_path, chunker_kind)
     for every file worth indexing"""
@@ -38,9 +39,9 @@ def discover_corpus_files(root: Path) -> list[tuple[Path, ChunkerKind]]:
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
-    
+
         relative_parts = path.relative_to(root).parts
-        if any(path in EXCLUDED_DIR_NAMES for part in relative_parts):
+        if any(part in EXCLUDED_DIR_NAMES for part in relative_parts):
             continue
 
         chunker_kind = CHUNKABLE_EXTENSIONS.get(path.suffix)
@@ -48,5 +49,5 @@ def discover_corpus_files(root: Path) -> list[tuple[Path, ChunkerKind]]:
             continue
 
         discovered.append((path, chunker_kind))
-    
+
     return discovered

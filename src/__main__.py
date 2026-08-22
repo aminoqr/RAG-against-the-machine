@@ -1,11 +1,21 @@
 """Command-line interface for the RAG against the machine project."""
 import fire
+from pathlib import Path
+from src.indexer import build_index, save_index
 
 
 class Cli:
     """Expose the project's commands as CLI subcommands via Python Fire."""
     def index(self, max_chunk_size: int = 2000) -> None:
-        print(f"index called with max_chunk_size={max_chunk_size}")
+        """Chunk the whole corpus and persist the resulting index.
+
+        Args:
+            max_chunk_size: maximum number of characters per chunk.
+        """
+        corpus_root = Path("data/raw/vllm-0.10.1")
+        idx = build_index(corpus_root, max_chunk_size)
+        out_path = save_index(idx, Path("data/processed"))
+        print(f"Indexed {len(idx.chunks)} chunks from corpus into {out_path}")
 
     def search(self, query: str, k: int = 10) -> None:
         print(f"search called with query={query!r}, k={k}")
