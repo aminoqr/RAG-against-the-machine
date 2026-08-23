@@ -2,20 +2,29 @@
 import fire
 from pathlib import Path
 from src.indexer import build_index, save_index
+from src.bm25 import build_bm25_index, save_bm25_index
 
 
 class Cli:
     """Expose the project's commands as CLI subcommands via Python Fire."""
     def index(self, max_chunk_size: int = 2000) -> None:
-        """Chunk the whole corpus and persist the resulting index.
+        """Chunk the whole corpus, fit a BM25 index, and persist both.
 
         Args:
             max_chunk_size: maximum number of characters per chunk.
         """
         corpus_root = Path("data/raw/vllm-0.10.1")
-        idx = build_index(corpus_root, max_chunk_size)
-        out_path = save_index(idx, Path("data/processed"))
-        print(f"Indexed {len(idx.chunks)} chunks from corpus into {out_path}")
+        chunk_index = build_index(corpus_root, max_chunk_size)
+        chunks_path = save_index(chunk_index, Path("data/processed"))
+
+        bm25_index = build_bm25_index(chunk_index)
+        bm25_path = save_bm25_index(bm25_index, Path("data/processed"))
+
+        print(
+            f"Indexed {len(chunk_index.chunks)} chunks "
+            f"({len(bm25_index.document_frequency)} unique terms) "
+            f"into {chunks_path} and {bm25_path}"
+        )
 
     def search(self, query: str, k: int = 10) -> None:
         print(f"search called with query={query!r}, k={k}")
