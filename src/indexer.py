@@ -67,7 +67,7 @@ def save_index(index: ChunkIndex, save_directory: Path) -> Path:
     save_directory.mkdir(parents=True, exist_ok=True)
     out_path = save_directory / "chunks.json"
     with out_path.open("w", encoding="utf-8") as f:
-        f.write(index.model_dump_json())
+        f.write(index.model_dump_json(indent=2))
     return out_path
 
 
