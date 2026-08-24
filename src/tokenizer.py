@@ -29,4 +29,4 @@ def tokenize(text: str) -> list[str]:
         ]
         if len(parts) > 1:
             tokens.extend(p.lower() for p in parts)
-        return tokens
+    return tokens
