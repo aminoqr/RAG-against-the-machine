@@ -3,6 +3,7 @@ import fire
 from pathlib import Path
 from src.indexer import build_index, save_index
 from src.bm25 import build_bm25_index, save_bm25_index
+from src.retriever import search as run_search
 
 
 class Cli:
@@ -27,7 +28,32 @@ class Cli:
         )
 
     def search(self, query: str, k: int = 10) -> None:
-        print(f"search called with query={query!r}, k={k}")
+        """Return the top-k sources for a single query.
+        
+        Args:
+            query: the question to search for.
+            k: maximum number of results to return.
+        """
+        
+        try:
+            results = run_search(query, k, Path("data/processed"))
+        except FileNotFoundError:
+            print(
+                "No index found under data/processed/ -- run "
+                "'uv run python -m src index' first."
+            )
+            return
+        
+        if not results:
+            print("No results.")
+            return
+        
+        for source in results:
+            print(
+                f"{source.file_path} "
+                f"[{source.first_character_index}:"
+                f"{source.last_character_index}]"
+            )
 
     def search_dataset(
         self, dataset_path: str, k: int = 10, save_directory: str = None
