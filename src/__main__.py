@@ -4,6 +4,7 @@ from pathlib import Path
 from src.indexer import build_index, save_index
 from src.bm25 import build_bm25_index, save_bm25_index
 from src.retriever import search as run_search
+from src.retriever import search_dataset as run_search_dataset
 
 
 class Cli:
@@ -56,12 +57,37 @@ class Cli:
             )
 
     def search_dataset(
-        self, dataset_path: str, k: int = 10, save_directory: str = None
+        self, dataset_path: str, k: int = 10, save_directory: str | None = None
     ) -> None:
-        print(
-            f"search_dataset called with dataset_path={dataset_path!r}, "
-            f"k={k}, save_directory={save_directory!r}"
-        )
+        """Run search over a whole dataset and write a
+        StudentSearchResults JSON file, scoped under save_directory.
+        
+        Args:
+            dataset_path: path to an UnansweredQuestions/
+                AnsweredQUestions JSON file.
+            k: max number of tesults to return per question.
+            save_directory: directory to write the output JSON into.
+        """
+        if not save_directory:
+            print("save_directory is required.")
+            return
+    
+        try:
+            out_path = run_search_dataset(
+                Path(dataset_path),
+                k,
+                Path(save_directory),
+                Path("data/processed"),
+            )
+        except FileNotFoundError as e:
+            print(f"File not found: {e}")
+            return
+        except ValueError as e:
+            print(f"Invalid dataset: {e}")
+            return
+        
+        print(f"Saved student_search_results to {out_path}")
+        
 
     def answer(self, query: str, k: int = 10) -> None:
         print(f"answer called with query={query!r}, k={k}")
