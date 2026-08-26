@@ -5,6 +5,7 @@ from src.indexer import build_index, save_index
 from src.bm25 import build_bm25_index, save_bm25_index
 from src.retriever import search as run_search
 from src.retriever import search_dataset as run_search_dataset
+from src.evaluator import evaluate as run_evaluate
 
 
 class Cli:
@@ -108,11 +109,35 @@ class Cli:
         student_search_results_path: str,
         dataset_path: str
     ) -> None:
-        print(
-            f"evaluate called with "
-            f"student_search_results_path={student_search_results_path!r} "
-            f"dataset_path={dataset_path!r}"
-        )
+        """Report your own recall@k against a ground-truth dataset.
+        
+        Args:
+            student_search_results_path: path to a StudentSearchResults
+                JSON file (search_dataset's output).
+            dataset_path: path to the matching ground-truth
+                AnsweredQuestions dataset.
+        """
+        try:
+            recall = run_evaluate(
+                Path(student_search_results_path), Path(dataset_path)
+            )
+        except FileNotFoundError as e:
+            print(f"File not found: {e}")
+            return
+        except ValueError as e:
+            print(f"Invalid input: {e}")
+            return
+        
+        if all(v == 0.0 for v in recall.values()):
+            print(
+                "Warning: every recall@k is 0.0 -- double check "
+                "student_search_resi;ts_dath and dataset_path actually "
+                "refer to the same set of questions."
+            )
+        
+        print("Evaluation Results")
+        print("=" * 40)
+        print(" ".join(f"Recall@{k}: {recall[k]:.3f}" for k in sorted(recall)))
 
 
 if __name__ == "__main__":
