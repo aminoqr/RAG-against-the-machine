@@ -20,24 +20,24 @@ RECALL_KS = (1, 3, 5, 10)
 def iou(a: MinimalSource, b: MinimalSource) -> float:
     """Intersection-over-union of two character ranges, 0 if they're
     in different files or don't overlap at all.
-    
+
     Args:
         a: first source location.
         b: second source location.
-    
+
     Returns:
         A float in [0, 1]; 0 when the files differ or the ranges
         don't overlap, 1 when the ranges are identical.
     """
     if a.file_path != b.file_path:
         return 0.0
-    
+
     inter_start = max(a.first_character_index, b.first_character_index)
     inter_end = min(a.last_character_index, b.last_character_index)
     intersection = max(0, inter_end - inter_start)
     if intersection == 0:
         return 0.0
-    
+
     union_start = min(a.first_character_index, b.first_character_index)
     union_end = max(a.last_character_index, b.last_character_index)
     union = union_end - union_start
@@ -72,24 +72,24 @@ def evaluate(
 ) -> dict[int, float]:
     """Compute recall@k (k in RECALL_KS) of student_search_results
     against the ground-truth AnsweredQuestions dataset_path.
-    
+
     Args:
         student_search_results_path: a StudentSearchResults JSON file
             (search_dataset's output).
         dataset_path: the matching ground-truth AnsweredQuestions
             dataset (must have real 'sources' per question).
-    
+
     Returns:
         A dict mapping each k in RECALL_KS to the mean recall@k across
         every question that has at least one ground-truth source.
-        
+
     Raises:
         FileNotFoundError: if either path doesn't exist.
         ValueError: if either file isn't valid JSON, or doesn't match
             the expected schema.
     """
     try:
-        with student_search_results_path.open("r",encoding="utf-8") as f:
+        with student_search_results_path.open("r", encoding="utf-8") as f:
             results_raw = json.load(f)
     except json.JSONDecodeError as e:
         raise ValueError(
@@ -102,7 +102,7 @@ def evaluate(
             f"{student_search_results_path} doesn't match the expected "
             f"StudentSearchResults format : {e}"
         ) from e
-    
+
     try:
         with dataset_path.open("r", encoding="utf-8") as f:
             dataset_raw = json.load(f)
@@ -114,29 +114,29 @@ def evaluate(
         raise ValueError(
             f"{dataset_path} doesn't match the expected dataset format: {e}"
         ) from e
-    
+
     ground_truth_by_id = {
         q.question_id: q.sources
         for q in dataset.rag_questions
         if isinstance(q, AnsweredQuestion)
     }
-    
+
     totals:  dict[int, float] = {k: 0.0 for k in RECALL_KS}
     counts: dict[int, int] = {k: 0 for k in RECALL_KS}
-    
+
     for result in student_results.search_results:
         ground_truth_sources = ground_truth_by_id.get(result.question_id)
         if ground_truth_sources is None:
             continue
         for k in RECALL_KS:
             recall = _recall_at_k(
-                ground_truth_sources,result.retrieved_sources, k
+                ground_truth_sources, result.retrieved_sources, k=k
             )
             if recall is None:
                 continue
             totals[k] += recall
             counts[k] += 1
-                
+
     return {
         k: (totals[k] / counts[k] if counts[k] else 0.0) for k in RECALL_KS
     }

@@ -16,3 +16,20 @@ package = false
 
 [[tool.uv.index]]
 url = "https://download.pytorch.org/whl/cpu"
+
+[tool.mypy]
+exclude = [
+    "^data/",
+    "^check_.*\\.py$",
+]
+
+[dependency-groups]
+dev = [
+    "flake8>=7.3.0",
+    "mypy>=2.3.1",
+    "types-tqdm>=4.70.0.20260805",
+]
+
+[[tool.mypy.overrides]]
+module = "fire"
+ignore_missing_imports = true
