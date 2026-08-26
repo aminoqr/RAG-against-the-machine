@@ -27,15 +27,15 @@ def _read_source_text(source: MinimalSource) -> str:
     except OSError:
         return ""
     return text[source.first_character_index:source.last_character_index]
-    
-    
+
+
 def build_prompt(
     question: str,
     sources: list[MinimalSource],
     max_context_chars: int = MAX_CONTENT_CHARS,
 ) -> str:
     """Assemble a grounded generation prompt from retrieved sources/
-    
+
     Sources are expected in rank order (best first, as returned by
     search()). They're included in that order until adding the next
     one would exceed max_context_chars; lower-ranking sources beyond
@@ -43,20 +43,20 @@ def build_prompt(
     mid-way, since a partial chunk risks cutting off exactly the
     sentence that answers the question. At least one source is always
     included if any were passed, even if it alone exceeds the budget.
-    
+
     Args:
         question: the user's question.
         sources: ranked source locations from search(), best first.
         max_context_chars: soft budget on total retrieved-context
             characters included in the prompt.
-    
+
     Returns:
         The full prompt text, ready to use as the user turn's content
         when building the messages list for apply_chat_template.
     """
     context_blocks: list[str] = []
     total_chars = 0
-    
+
     for source in sources:
         text = _read_source_text(source)
         if not text:
@@ -66,9 +66,9 @@ def build_prompt(
             break
         context_blocks.append(block)
         total_chars += len(block)
-        
+
     context = "\n\n".join(context_blocks)
-    
+
     return (
         f"{SYSTEM_INSTRUCTION}\n\n"
         f"Context:\n{context}\n\n"

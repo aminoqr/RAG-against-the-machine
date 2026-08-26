@@ -7,6 +7,7 @@ from src.retriever import search as run_search
 from src.retriever import search_dataset as run_search_dataset
 from src.evaluator import evaluate as run_evaluate
 from src.generator import load_model, answer_question
+from src.generator import answer_dataset as run_answer_dataset
 
 
 class Cli:
@@ -23,7 +24,7 @@ class Cli:
         except ValueError as e:
             print(f"Indexing failed: {e}")
             return
-        
+
         chunks_path = save_index(chunk_index, Path("data/processed"))
         bm25_index = build_bm25_index(chunk_index)
         bm25_path = save_bm25_index(bm25_index, Path("data/processed"))
@@ -36,12 +37,12 @@ class Cli:
 
     def search(self, query: str, k: int = 10) -> None:
         """Return the top-k sources for a single query.
-        
+
         Args:
             query: the question to search for.
             k: maximum number of results to return.
         """
-        
+
         try:
             results = run_search(query, k, Path("data/processed"))
         except FileNotFoundError:
@@ -50,11 +51,11 @@ class Cli:
                 "'uv run python -m src index' first."
             )
             return
-        
+
         if not results:
             print("No results.")
             return
-        
+
         for source in results:
             print(
                 f"{source.file_path} "
@@ -67,7 +68,7 @@ class Cli:
     ) -> None:
         """Run search over a whole dataset and write a
         StudentSearchResults JSON file, scoped under save_directory.
-        
+
         Args:
             dataset_path: path to an UnansweredQuestions/
                 AnsweredQUestions JSON file.
@@ -77,7 +78,7 @@ class Cli:
         if not save_directory:
             print("save_directory is required.")
             return
-    
+
         try:
             out_path = run_search_dataset(
                 Path(dataset_path),
@@ -91,13 +92,12 @@ class Cli:
         except ValueError as e:
             print(f"Invalid dataset: {e}")
             return
-        
+
         print(f"Saved student_search_results to {out_path}")
-        
 
     def answer(self, query: str, k: int = 10) -> None:
         """Answer a single query using retrieved context.
-        
+
         Args:
             query: the question to answer.
             k: number of retrieved sources to use.
@@ -110,16 +110,16 @@ class Cli:
                 "'uv run python -m src index' first."
             )
             return
-        
+
         if not sources:
             print("No relevant sources found -- cannot answer.")
             return
-        
+
         print("Loading model...")
         tokenizer, model = load_model()
-        
+
         result = answer_question(query, sources, tokenizer, model)
-        
+
         print()
         print(f"Answer: {result.answer}")
         print()
@@ -136,11 +136,31 @@ class Cli:
         student_search_results_path: str,
         save_directory: str = ""
     ) -> None:
-        print(
-            f"answer_dataset called with "
-            f"student_search_results_path={student_search_results_path!r}, "
-            f"save_directory={save_directory!r}"
-        )
+        """Generate answers for every question in a
+        StudentSearchResults file and write a
+        StudentSearchResultsAndAnswer JSON, scoped under save_directory.
+
+        Args:
+            student_search_results_path: path to a StudentSearchResults
+                JSON file (search_dataset's output).
+            save_directory: directory to write the output JSON into.
+        """
+        if not save_directory:
+            print("save directory is required.")
+            return
+
+        try:
+            out_path = run_answer_dataset(
+                Path(student_search_results_path), Path(save_directory)
+            )
+        except FileNotFoundError as e:
+            print(f"File not found: {e}")
+            return
+        except ValueError as e:
+            print(f"Invalid input: {e}")
+            return
+
+        print(f"Saved student_search_results_and_answer to {out_path}")
 
     def evaluate(
         self,
@@ -148,7 +168,7 @@ class Cli:
         dataset_path: str
     ) -> None:
         """Report your own recall@k against a ground-truth dataset.
-        
+
         Args:
             student_search_results_path: path to a StudentSearchResults
                 JSON file (search_dataset's output).
@@ -165,14 +185,14 @@ class Cli:
         except ValueError as e:
             print(f"Invalid input: {e}")
             return
-        
+
         if all(v == 0.0 for v in recall.values()):
             print(
                 "Warning: every recall@k is 0.0 -- double check "
-                "student_search_resi;ts_dath and dataset_path actually "
+                "student_search_results_path and dataset_path actually "
                 "refer to the same set of questions."
             )
-        
+
         print("Evaluation Results")
         print("=" * 40)
         print(" ".join(f"Recall@{k}: {recall[k]:.3f}" for k in sorted(recall)))

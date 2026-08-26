@@ -43,7 +43,8 @@ def build_bm25_index(chunk_index: ChunkIndex) -> Bm25Index:
         chunks_by_file[source.file_path].append(i)
 
     n_chunks = len(chunk_index.chunks)
-    chunk_term_frequencies: list[dict[str, int]] = [{} for _ in range(n_chunks)]
+    chunk_term_frequencies: list[dict[str, int]] = [{}
+                                                    for _ in range(n_chunks)]
     document_frequency: Counter[str] = Counter()
     total_length = 0
 
