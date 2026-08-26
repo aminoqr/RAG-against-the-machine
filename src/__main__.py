@@ -6,6 +6,7 @@ from src.bm25 import build_bm25_index, save_bm25_index
 from src.retriever import search as run_search
 from src.retriever import search_dataset as run_search_dataset
 from src.evaluator import evaluate as run_evaluate
+from src.generator import load_model, answer_question
 
 
 class Cli:
@@ -95,7 +96,40 @@ class Cli:
         
 
     def answer(self, query: str, k: int = 10) -> None:
-        print(f"answer called with query={query!r}, k={k}")
+        """Answer a single query using retrieved context.
+        
+        Args:
+            query: the question to answer.
+            k: number of retrieved sources to use.
+        """
+        try:
+            sources = run_search(query, k, Path("data/processed"))
+        except FileNotFoundError:
+            print(
+                "No index found under data/processed/ -- run "
+                "'uv run python -m src index' first."
+            )
+            return
+        
+        if not sources:
+            print("No relevant sources found -- cannot answer.")
+            return
+        
+        print("Loading model...")
+        tokenizer, model = load_model()
+        
+        result = answer_question(query, sources, tokenizer, model)
+        
+        print()
+        print(f"Answer: {result.answer}")
+        print()
+        print("Sources used:")
+        for source in result.retrieved_sources:
+            print(
+                f" {source.file_path} "
+                f"[{source.first_character_index}:"
+                f"{source.last_character_index}]"
+            )
 
     def answer_dataset(
         self,
