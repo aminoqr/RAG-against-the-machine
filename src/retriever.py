@@ -101,7 +101,7 @@ def search_dataset(
     except ValidationError as e:
         raise ValueError(
             f"{dataset_path} doesn't match"
-             "the expected dataset format: {e}"
+            f"the expected dataset format: {e}"
         ) from e
     
     chunk_index = load_index(processed_dir)

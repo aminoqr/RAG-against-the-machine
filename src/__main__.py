@@ -17,9 +17,13 @@ class Cli:
             max_chunk_size: maximum number of characters per chunk.
         """
         corpus_root = Path("data/raw/vllm-0.10.1")
-        chunk_index = build_index(corpus_root, max_chunk_size)
+        try:
+            chunk_index = build_index(corpus_root, max_chunk_size)
+        except ValueError as e:
+            print(f"Indexing failed: {e}")
+            return
+        
         chunks_path = save_index(chunk_index, Path("data/processed"))
-
         bm25_index = build_bm25_index(chunk_index)
         bm25_path = save_bm25_index(bm25_index, Path("data/processed"))
 
