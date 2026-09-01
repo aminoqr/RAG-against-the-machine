@@ -1,10 +1,13 @@
-.PHONY: install run debug clean lint lint-strict
+.PHONY: install run debug clean lint lint-strict serve
 
 install:
 		uv sync
 
 run:
 		uv run python -m src
+
+serve:
+		uv run uvicorn src.api:app --port 8000
 
 debug:
 		uv run python -m pdb -m src

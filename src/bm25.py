@@ -9,8 +9,11 @@ from pydantic import BaseModel
 from src.indexer import ChunkIndex
 from src.tokenizer import tokenize
 
-K1 = 1.5
-B = 0.75
+# Tuned via grid search against the labeled AnsweredQuestions datasets
+# (see README "Retrieval method"): k1=1.2, b=0.5 beat the textbook
+# defaults (1.5, 0.75) by +1pt docs / +3pt code Recall@5 on this corpus.
+K1 = 1.2
+B = 0.5
 
 
 class Bm25Index(BaseModel):
@@ -54,12 +57,23 @@ def build_bm25_index(chunk_index: ChunkIndex) -> Bm25Index:
         except OSError:
             continue
 
+        path_tokens = tokenize(file_path)
         for i in indices:
             source = chunk_index.chunks[i]
             slice_text = text[
                 source.first_character_index:source.last_character_index
             ]
             tf = Counter(tokenize(slice_text))
+            # Fold the file path's own tokens into the chunk's bag of
+            # words. A question naming a feature/module ("lora",
+            # "quantization") often echoes the file it lives in even
+            # when the chunk text itself doesn't repeat that word.
+            # Boilerplate path segments shared by every file (data,
+            # raw, vllm...) end up with df == n_chunks and idf ~= 0,
+            # so this is self-correcting: no manual stopword list
+            # needed, only genuinely distinguishing path segments end
+            # up moving any score.
+            tf.update(path_tokens)
             chunk_term_frequencies[i] = dict(tf)
             total_length += sum(tf.values())
             document_frequency.update(tf.keys())

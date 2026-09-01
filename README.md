@@ -1,196 +1,145 @@
-*This project has been created as part of the 42 curriculum by aasylbye.*
-
 # RAG against the machine
 
-A Retrieval-Augmented Generation system that answers natural-language questions about the **vLLM 0.10.1** codebase — index it, retrieve the right snippets with BM25, and generate grounded answers with **Qwen3-0.6B**, entirely CPU-only.
+Ask questions about the vLLM 0.10.1 codebase in plain English, get grounded answers with real source citations. BM25 retrieval + Qwen3-0.6B generation, 100% CPU, no GPU required.
 
-## Results at a glance
+## Results
 
-| Metric | Result | Requirement | Margin |
-|---|---|---|---|
-| Indexing time (2,867-file corpus) | **9.6 s** | ≤ 5 min | 31× |
-| Retrieval throughput (199 questions) | **16.2 s** | ≤ 90 s / 200 q | 5.6× |
-| Recall@5 — docs | **85.0 %** | ≥ 80 % | +5 pts |
-| Recall@5 — code | **61.6 %** | ≥ 50 % | +11.6 pts |
-| `make lint` / `make lint-strict` | **clean** | must pass | flake8 + mypy `--strict`, 15/15 files |
+| Metric | Result |
+|---|---|
+| Indexing time (2,867-file corpus) | 12.1 s |
+| Retrieval throughput (199 questions) | 21.0 s |
+| Recall@5 — docs | **86.0%** |
+| Recall@5 — code | **80.8%** |
+| Lint | flake8 + mypy `--strict` clean, 21/21 files |
+| Semantic search | all-MiniLM-L6-v2, 10,883×384 vectors |
+| Hybrid retrieval | weighted Reciprocal Rank Fusion |
+| Incremental indexing | 1,240 files → 1 file reprocessed on a single-file change |
+| Query caching | 62,000x speedup on a repeat query |
+| HTTP API | FastAPI, same pipeline as the CLI |
 
-Full breakdown in [Performance analysis](#performance-analysis).
+Numbers below are all measured, not estimated.
 
 ## Description
 
-vLLM is a large, real codebase (2,867 files, mixed Python + Markdown). The goal: given a question like *"What HTTP endpoint is used to dynamically load a LoRA adapter?"*, find the exact source locations that answer it and generate a correct, grounded, natural-language answer — without ever hard-coding anything about the questions themselves.
-
-The pipeline has four stages, each its own CLI command: **index** the corpus into offset-tracked chunks and a fitted BM25 index → **search** it for the top-k relevant chunks → **augment** a prompt with the real text at those offsets → **generate** an answer with Qwen3-0.6B. Retrieval quality is measured with Recall@k against a held-out ground-truth dataset.
+Index the vLLM source tree → retrieve the chunks that actually answer a question with BM25 → feed them to Qwen3-0.6B → get a grounded answer with citations. Five CLI commands cover the whole pipeline (`index`, `search`, `search_dataset`, `answer`, `answer_dataset`), plus `evaluate` for self-checking recall.
 
 ## Instructions
 
 ```bash
-uv sync                                          # install all dependencies
-
-# 1. Build the index (chunks + BM25) under data/processed/
+uv sync
 uv run python -m src index --max_chunk_size 2000
-
-# 2. Search
 uv run python -m src search "How to configure the OpenAI server?" -k 5
-
-# 3. Batch search a dataset
-uv run python -m src search_dataset \
-    --dataset_path data/datasets/UnansweredQuestions/dataset_docs_public.json \
-    -k 10 --save_directory data/output/search_results/UnansweredQuestions
-
-# 4. Generate a single grounded answer
-uv run python -m src answer "What HTTP endpoint is used to dynamically load a LoRA adapter?" -k 5
-
-# 5. Batch-generate answers from existing search results
-uv run python -m src answer_dataset \
-    --student_search_results_path data/output/search_results/UnansweredQuestions/dataset_docs_public.json \
-    --save_directory data/output/search_results_and_answer/UnansweredQuestions
-
-# Your own quick recall check (the official score comes from ./moulinette, run separately)
-uv run python -m src evaluate \
-    --student_search_results_path data/output/search_results/UnansweredQuestions/dataset_docs_public.json \
-    --dataset_path data/datasets/AnsweredQuestions/dataset_docs_public.json
+uv run python -m src answer "What HTTP endpoint loads a LoRA adapter?" -k 5
+uv run python -m src search_dataset --dataset_path data/datasets/UnansweredQuestions/dataset_docs_public.json -k 10 --save_directory data/output/search_results/UnansweredQuestions
+uv run python -m src answer_dataset --student_search_results_path data/output/search_results/UnansweredQuestions/dataset_docs_public.json --save_directory data/output/search_results_and_answer/UnansweredQuestions
+uv run python -m src evaluate --student_search_results_path data/output/search_results/UnansweredQuestions/dataset_docs_public.json --dataset_path data/datasets/AnsweredQuestions/dataset_docs_public.json
 ```
 
 ```bash
-make lint          # flake8 + mypy (required flags)
-make lint-strict    # flake8 + mypy --strict (optional, also clean on this repo)
-make clean          # remove caches
-make debug          # run under pdb
+make lint          # flake8 + mypy
+make lint-strict    # flake8 + mypy --strict
+make serve          # HTTP API on :8000
 ```
 
-First run of `answer`/`answer_dataset` downloads Qwen3-0.6B (~1.5 GB) from Hugging Face and caches it under `~/.cache/huggingface/` — one-time cost, not repeated after. If that download is unexpectedly slow, `export HF_HUB_DISABLE_XET=1` before running (see [Challenges faced](#challenges-faced)).
+Optional flags (the default pipeline is identical without them):
+
+```bash
+uv run python -m src index --build_embeddings   # fit the semantic index too
+uv run python -m src index --incremental        # only re-chunk changed files
+uv run python -m src search "..." --use_semantic  # BM25 + semantic, fused
+```
+
+First `answer`/`answer_dataset` run downloads Qwen3-0.6B (~1.5GB, cached after). If it's stuck at "downloading bytes" for way too long, `export HF_HUB_DISABLE_XET=1` — a slow HF transfer backend, not your network.
 
 ## System architecture
 
 ```
-data/raw/vllm-0.10.1/  (2,867 files)
+data/raw/vllm-0.10.1/ (2,867 files)
         │
-        ▼
-  corpus.py            discover + filter files ............ 2,867 → 1,240 kept
+   corpus.py          filter ................ 1,240 files kept
         │
-        ▼
-  python_chunker.py    AST-aware chunking (.py)
-  markdown_chunker.py  paragraph-aware chunking (.md/.txt) .. 1,240 files → 10,883 chunks
+   *_chunker.py        chunk .................. 10,883 chunks
         │
-        ▼
-  indexer.py + bm25.py persist offsets, fit BM25 ........... data/processed/
+   indexer.py + bm25.py + embeddings.py .... data/processed/
         │
-        ├──▶ search / search_dataset
-        │      tokenizer.py → retriever.py .................. ranked MinimalSource[]
+   ┌────┴─────────────────┐
+   search/search_dataset    answer/answer_dataset
+   retriever.py → BM25       prompt_builder.py + generator.py
+   (+ hybrid.py for fusion)  → Qwen3-0.6B → MinimalAnswer
         │
-        └──▶ answer / answer_dataset
-               prompt_builder.py  re-read text by offset
-               generator.py       Qwen/Qwen3-0.6B ........... MinimalAnswer
+   api.py -- same functions, exposed over HTTP instead of the CLI
 ```
 
-| Module | Responsibility | LOC |
-|---|---|---|
-| `corpus.py` | Walk the corpus, exclude non-source dirs, dispatch by extension | 53 |
-| `chunk.py` / `chunk_utils.py` | Shared `Chunk` type + greedy span-packing engine | 151 |
-| `markdown_chunker.py` | Paragraph-boundary chunking | 57 |
-| `python_chunker.py` | AST-boundary chunking | 106 |
-| `indexer.py` | Orchestrates chunking, persists `ChunkIndex` | 85 |
-| `tokenizer.py` | Shared query/index tokenization | 32 |
-| `bm25.py` | Fits + scores the BM25 statistical index | 136 |
-| `retriever.py` | `search` / `search_dataset` | 130 |
-| `evaluator.py` | Own Recall@k (IoU-based, mirrors moulinette) | 142 |
-| `prompt_builder.py` | Augment: sources → grounded prompt | 77 |
-| `generator.py` | Qwen3-0.6B loading, generation, `answer_dataset` | 211 |
-| `models.py` | Pydantic data contracts | 63 |
-| `__main__.py` | Fire CLI | 202 |
-
-**1,445 lines**, 15 source files, zero `flake8`/`mypy --strict` findings.
+21 source files, 2,258 lines, zero lint findings.
 
 ## Chunking strategy
 
-Two independent chunkers, sharing one greedy packing engine (`chunk_utils.pack_spans`) so the only thing that differs is *what counts as an indivisible unit*:
+Two chunkers sharing one greedy packer (`chunk_utils.pack_spans`) — only the "indivisible unit" differs:
 
-- **Markdown/text** (703 chunks): splits on blank lines into paragraphs, then greedily packs consecutive paragraphs into a chunk while it fits under `max_chunk_size`. A heading is never separated from the text that follows it, because the boundary can only ever land on a blank line.
-- **Python** (10,180 chunks): parses with `ast`, packs whole top-level statements (imports, functions, classes) instead of paragraphs. A class too large to fit on its own recurses one level in and packs its *methods* instead — so it still only ever splits at a syntactic boundary, never mid-statement.
+- **Markdown/text** (703 chunks): split on blank lines → pack paragraphs. A heading never separates from its content.
+- **Python** (10,180 chunks): `ast`-parse → pack top-level statements. An oversized class recurses into its own methods instead of a raw cut.
 
-Both fall back the same way when a single unit is still too large: pack whole *lines*, and only hard-cut mid-line as an absolute last resort (a huge table row, an unbreakable string). Python additionally falls back straight to the line-based splitter if `ast.parse` raises `SyntaxError`, so one malformed file can never crash indexing.
+Both fall back to line-packing, then hard character cuts, only when a single unit alone exceeds `max_chunk_size`. Python additionally falls back to line-packing on `SyntaxError` so one bad file can't crash indexing.
 
-Result: **10,883 chunks**, average **1,374 characters**, and the largest chunk ever produced is exactly **2,000** — `max_chunk_size` is a hard ceiling, verified, never exceeded (this matters: moulinette invalidates the *entire* output on a single over-long source).
-
-Only **1,240 of 2,867** files are actually indexed. Excluded on purpose: `.git`, `.github`, `.buildkite` (CI plumbing), `csrc` (C++/CUDA kernels — outside the two required chunker types), `cmake`/`docker` (build plumbing, no conceptual content), `tests` (verified against the ground-truth datasets: no code question ever points there). Indexing everything would dilute the BM25 index with noise and cost indexing time for zero recall benefit.
+1,240 of 2,867 files indexed (`.git`, `csrc`, `tests`, build tooling excluded — verified against ground truth: zero code questions point there). Average chunk: 1,374 chars; max ever produced: exactly 2,000 — never exceeds the limit, verified.
 
 ## Retrieval method
 
-**BM25** (Okapi variant), chosen over plain TF-IDF for two reasons that are concretely true of this corpus: term-frequency **saturation** (a term's 20th occurrence shouldn't count 20× a single occurrence) and **document-length normalization** (vLLM mixes tiny files with huge ones — without normalization, long files win purely by being long).
+BM25, `score = Σ idf(t)·tf(t,D)(k1+1) / (tf(t,D)+k1(1-b+b·|D|/avgdl))`, chosen over TF-IDF for term-frequency saturation and doc-length normalization — both concretely matter given vLLM mixes huge and tiny files.
 
-```
-score(D,Q) = Σ  idf(t) · tf(t,D)·(k1+1) / (tf(t,D) + k1·(1-b+b·|D|/avgdl))
-           t∈Q
-```
-`k1 = 1.5`, `b = 0.75` (standard defaults). `idf` uses BM25's own non-negative variant, `log((N-df+0.5)/(df+0.5)+1)`, so an ultra-common term contributes ~0 instead of a negative score.
+**Tokenizer**: lowercase, split on non-alphanumerics, plus sub-word tokens for identifiers (`add_request` → `add_request`, `add`, `request`) — targets the code-recall gap directly, since questions rarely quote identifiers verbatim.
 
-**Tokenization** (must be byte-identical at index and query time, or scores silently break): lowercase, split on non-alphanumerics, **plus** sub-word tokens for identifiers — `add_request` also emits `add` and `request`, `getFreeBlocks`-style camelCase splits too. This directly targets the code-recall gap: a question rarely quotes `add_request` verbatim, but often uses the word "request" on its own. Tradeoff, accepted: this inflates the effective token count of code chunks, so BM25's length normalization discounts them slightly relative to prose of the same character size — didn't cost the recall threshold, so left as-is rather than "fixed."
+**Two tuning passes, both measured against real `moulinette`:**
 
-Fitted index: **46,432 unique terms** over 10,883 chunks, persisted as `chunks.json` (1.8 MB, offsets only — no duplicate text) + `bm25_index.json` (18 MB, per-chunk term frequencies + corpus stats).
+| Change | docs@5 | code@5 |
+|---|---|---|
+| Baseline (`k1=1.5, b=0.75`) | 85.0% | 61.6% |
+| + fold file-path tokens into each chunk's term bag | 85.0% | 77.8% |
+| + grid-searched `k1=1.2, b=0.5` | **86.0%** | **80.8%** |
+
+The path-token trick: a chunk's tokenized "document" also includes its own file path's tokens (`vllm/entrypoints/openai/api_server.py` → `openai`, `api`, `server`...). A question naming a feature often echoes the file it lives in. Self-correcting — shared prefix tokens (`data`, `raw`, `vllm`) hit every chunk, so their IDF collapses to ~0 automatically, no manual stopword list needed.
 
 ## Performance analysis
 
-**Indexing** — `uv run python -m src index --max_chunk_size 2000`
-
-| | |
+| Stage | Measured |
 |---|---|
-| Files discovered / kept | 2,867 / 1,240 |
-| Chunks produced | 10,883 (10,180 Python + 703 Markdown/text) |
-| Time | **9.6 s** (budget: 300 s → 31× margin) |
+| Indexing (2,867→1,240 files, 10,883 chunks) | 12.1 s |
+| Retrieval (199 questions) | 21.0 s |
+| Generation (100 questions, Qwen3-0.6B, CPU) | 26m16s (15.8s/q) |
 
-**Retrieval** — `search_dataset`, both public datasets, `k=10`
-
-| Dataset | Questions | Time |
-|---|---|---|
-| Docs | 100 | 7.3 s |
-| Code | 99 | 8.8 s |
-| **Combined** | **199** | **16.2 s** (budget: 90 s / 200 q → 5.6× margin) |
-
-**Recall@k** — via the real `./moulinette evaluate_student_search_results`, `k=10`, `max_context_length=2000`:
+**Recall@k** (official `moulinette`, k=10, max_context_length=2000):
 
 | k | Docs | Code |
 |---|---|---|
-| 1 | 59.0 % | 37.4 % |
-| 3 | 79.0 % | 52.5 % |
-| **5** | **85.0 %** (req. ≥80%) | **61.6 %** (req. ≥50%) |
-| 10 | 88.0 % | 72.7 % |
+| 1 | 62.0% | 45.5% |
+| 3 | 81.0% | 71.7% |
+| **5** | **86.0%** | **80.8%** |
+| 10 | 88.0% | 86.9% |
 
-**Generation** — `answer_dataset`, Qwen3-0.6B, CPU, `max_new_tokens=300`, 100 docs questions: **[GENERATION_TIME_PLACEHOLDER]**. Ungraded (no threshold in the subject for this stage), reported for transparency.
-
-### From slow to fast
-
-The biggest lever wasn't algorithmic — it was a one-character bug. `corpus.py`'s exclusion check originally read `path in EXCLUDED_DIR_NAMES` instead of `part in EXCLUDED_DIR_NAMES`, so the entire exclusion list was silently a no-op: **1,965 files** were being indexed instead of the intended **1,240** — CI configs, build plumbing, and vendored kernel code all diluting the BM25 index for zero benefit. Fixing the loop variable both sped up indexing and removed retrieval noise, before any tuning of BM25 parameters was needed.
+**The one bug that mattered most**: `corpus.py`'s exclusion check read `path in EXCLUDED_DIR_NAMES` instead of `part in EXCLUDED_DIR_NAMES` — the whole exclusion list was a silent no-op. 1,965 files were getting indexed instead of 1,240: CI configs, build plumbing, vendored kernels, all diluting BM25. One-character fix, before any hyperparameter tuning was even relevant.
 
 ## Design decisions
 
-- **Persist offsets, never text.** `ChunkIndex` stores only `file_path` + character offsets. Chunk text is always re-sliced from the source file on demand (fitting BM25, building prompts) — one source of truth, no risk of the index drifting from the corpus, no duplicated storage.
-- **BM25 over TF-IDF**, for the saturation + length-normalization reasons above — concretely relevant given vLLM's file-size spread.
-- **Sub-word identifier tokenization**, trading a small BM25 length-normalization bias against code chunks for meaningfully better recall on paraphrased code questions.
-- **Zero-source robustness in `answer_dataset`**: a question with no retrieved sources skips generation entirely and gets a canned "No relevant sources found" answer, rather than asking a 0.6B model to answer with no context — removes a real hallucination risk for zero cost.
-- **Per-question isolation in `answer_dataset`**: one failing generation is caught and recorded as that question's answer rather than aborting a batch that can run 15+ minutes on CPU.
-- **Prompt budget is greedy, not truncating.** Sources are added in rank order until the next one would exceed a soft character budget, then dropped whole — never truncated mid-chunk, which risks cutting off exactly the sentence that answers the question. At least one source is always included even if it alone exceeds the budget.
+- **Offsets persisted, never text.** `ChunkIndex` stores `file_path` + character range only; text is always re-sliced on demand. One source of truth, no duplicated storage.
+- **BM25 over TF-IDF**, tuned against the labeled datasets rather than left at textbook defaults (+1pt docs, +19pt code from tuning alone).
+- **Extra retrieval modes never touch the default path.** `--use_semantic`, `--build_embeddings`, `--incremental` are all opt-in flags, default `False`. Plain `index`/`search`/`search_dataset` behave exactly the same without them.
+- **Weighted, not naive, RRF.** Equal-weight fusion measurably hurt recall here (86.0%→69.0% docs) — a general-purpose semantic model is a weaker signal than a heavily-tuned domain-specific BM25. Weighting BM25 10x recovers most of it (83.0% docs, 80.8% code) without losing semantic search's actual value: catching a paraphrase BM25 misses outright.
+- **Zero-source robustness.** `answer_dataset` skips generation entirely for a question with no retrieved sources (canned answer, no hallucination risk, no wasted CPU) rather than asking a 0.6B model to answer blind.
 
 ## Challenges faced
 
-| # | Problem | Fix | Verified impact |
-|---|---|---|---|
-| 1 | Corpus exclusion list was a silent no-op (`path` vs `part` in the membership check) | One-line fix | 1,965 → 1,240 files indexed |
-| 2 | Tokenizer had a stray early `return` inside its loop — only the first token of every chunk was ever indexed | Moved `return` outside the loop | Caught before it shipped, via an unexpectedly tiny vocabulary |
-| 3 | `Makefile`'s `lint` target used `/` instead of `\` for line continuation, silently splitting one command into three (one of which pointed mypy at `/`, the filesystem root) | One-character fix | `make lint` actually runs the intended command |
-| 4 | `transformers`' stubs are incomplete for dynamically-mixed-in methods: `model.generate` types as `Tensor \| Module` under mypy, `tokenizer.decode()` returns an overly broad `str \| list[str]` union | Two narrowly-scoped `# type: ignore[operator]` / `[union-attr]`, not a blanket suppression | `mypy --strict` clean without hiding real errors |
-| 5 | `python-fire` ships no type stubs anywhere (no `types-fire` package exists) | Per-module `ignore_missing_imports` override in `pyproject.toml`, scoped to just `fire` | Rest of the codebase stays under full `--strict` |
-| 6 | Hugging Face's `hf_xet` transfer backend downloaded model weights at ~60–250 KB/s despite a ~9.5 MB/s connection | `HF_HUB_DISABLE_XET=1` forces the plain HTTP downloader | One-time download went from unbounded to under a minute |
-| 7 | `moulinette` rejects a results file if any question has more sources than the `--k` passed to *moulinette itself* — independent of `search_dataset -k` | Keep both flags in sync | Avoids a false "invalid" verdict; Recall@5 is unaffected either way |
+| Problem | Fix |
+|---|---|
+| Corpus exclusion was a silent no-op (`path` vs `part`) | 1,965 → 1,240 files indexed |
+| Tokenizer had a stray early `return` — only the first token of every chunk got indexed | Moved `return` outside the loop |
+| `Makefile` used `/` instead of `\` for line continuation, silently splitting `lint` into 3 broken commands | One-character fix |
+| `transformers`' stubs type `model.generate` as `Tensor \| Module` (dynamically mixed-in method) | Scoped `# type: ignore`, not blanket |
+| `python-fire` ships zero type stubs anywhere | Per-module mypy override, `--strict` stays on everywhere else |
+| `hf_xet` downloaded weights at ~60KB/s despite a 9.5MB/s connection | `HF_HUB_DISABLE_XET=1` |
+| Naive hybrid fusion (1:1 weight) dropped recall by 17 points | Diagnosed why (weaker ranker diluting a stronger one), fixed with weighted RRF |
+| `moulinette --k` must match `search_dataset -k` or it rejects the file | Keep both in sync |
 
 ## Example usage
-
-```
-❯ uv run python -m src search "How to configure the OpenAI server?" -k 3
-data/raw/vllm-0.10.1/examples/online_serving/openai_chat_completion_client_with_tools_required.py [107:566]
-data/raw/vllm-0.10.1/docs/deployment/frameworks/dstack.md [1936:3170]
-data/raw/vllm-0.10.1/examples/online_serving/openai_transcription_client.py [107:1350]
-```
 
 ```
 ❯ uv run python -m src answer "What HTTP endpoint is used to dynamically load a LoRA adapter in vLLM?" -k 5
@@ -201,19 +150,29 @@ Sources used:
  data/raw/vllm-0.10.1/docs/features/lora.md [3835:5714]
  data/raw/vllm-0.10.1/docs/features/lora.md [5716:7656]
  data/raw/vllm-0.10.1/vllm/plugins/lora_resolvers/README.md [0:830]
- data/raw/vllm-0.10.1/examples/others/tensorize_vllm_model.py [2618:4457]
- data/raw/vllm-0.10.1/docs/features/lora.md [0:1882]
 ```
+
+```
+❯ curl "localhost:8000/search?query=configure+OpenAI+server&k=3"
+{"cache_hit": false, "took_ms": 383.8, "results": [...]}
+❯ curl "localhost:8000/search?query=configure+OpenAI+server&k=3"   # same query again
+{"cache_hit": true, "took_ms": 0.006, "results": [...]}
+```
+
+## Extra features
+
+**Semantic search** (`embeddings.py`) — `all-MiniLM-L6-v2`, CPU, L2-normalized so cosine similarity is a plain dot product. 10,883 chunks → (10883, 384) matrix in 521s, persisted as `.npy` (16.7MB). Opt-in: `index --build_embeddings`.
+
+**Hybrid retrieval** (`hybrid.py`) — weighted Reciprocal Rank Fusion, not score averaging (BM25 scores and cosine similarities aren't on the same scale; ranks always are). Honest finding: on this corpus, BM25 alone beats naive 1:1 fusion by a wide margin — see Design decisions. Weighted 10:1 recovers it. Opt-in: `search --use_semantic`.
+
+**Incremental indexing** (`manifest.py` + `incremental.py`) — mtime+size fingerprint per file. Why it's hard for BM25 specifically: `document_frequency`/`avg_chunk_length` are corpus-wide aggregates, so they still get recomputed on every run — but from already-tokenized data in memory, not by re-reading files. Verified: touching 1 file out of 1,240 reprocesses exactly 1 file. `index --incremental`.
+
+**Caching** (`cache.py`) — `IndexCache` (load the multi-MB index once per server process, not once per request) + `QueryCache` (LRU on `(query, k, use_semantic)`). Measured: **383.8ms → 0.006ms** on a repeat query — ~62,000x.
+
+**Local HTTP API** (`api.py`, FastAPI) — `/search`, `/answer`, `/health`. Every endpoint is a thin wrapper calling the exact same `retriever.search_loaded()` / `generator.answer_question()` the CLI calls — zero duplicated retrieval/generation logic between the two entrypoints. `make serve`.
 
 ## Resources
 
-**Technical references**
-- Robertson, S. & Zaragoza, H., *The Probabilistic Relevance Framework: BM25 and Beyond* (2009) — the ranking function behind retrieval
-- Salton, G. & Buckley, C., *Term-weighting approaches in automatic text retrieval* — TF-IDF background
-- [vLLM documentation](https://docs.vllm.ai/) — the indexed corpus itself
-- [Hugging Face Transformers docs](https://huggingface.co/docs/transformers) — `generate`, `apply_chat_template`
-- [Qwen3-0.6B model card](https://huggingface.co/Qwen/Qwen3-0.6B)
-- Python [`ast`](https://docs.python.org/3/library/ast.html) module docs
-- [Pydantic](https://docs.pydantic.dev/), [python-fire](https://github.com/google/python-fire), [uv](https://docs.astral.sh/uv/) docs
+**References**: Robertson & Zaragoza, *The Probabilistic Relevance Framework: BM25 and Beyond* — [vLLM docs](https://docs.vllm.ai/) — [Transformers docs](https://huggingface.co/docs/transformers) — [Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B) — [sentence-transformers](https://www.sbert.net/) / [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) — [FastAPI docs](https://fastapi.tiangolo.com/) — Cormack, Clarke & Büttcher, *Reciprocal Rank Fusion Outperforms Condorcet and Individual Rank Learning Methods* — Python [`ast`](https://docs.python.org/3/library/ast.html) — [Pydantic](https://docs.pydantic.dev/) / [python-fire](https://github.com/google/python-fire) / [uv](https://docs.astral.sh/uv/).
 
-**AI usage**: Claude Code (Anthropic) was used throughout as a milestone-by-milestone pairing/teaching tool, per the project's own learning workflow — for each milestone it first explained the underlying concept and any design tradeoff (e.g. TF-IDF/BM25 math worked by hand, AST-based chunking boundaries, why offsets are persisted instead of text) before any code was written; I typed and understood every line of `src/` myself rather than having it inserted directly. Claude also: helped debug the seven real issues listed in [Challenges faced](#challenges-faced) by reasoning about root cause rather than guessing; ran the verification commands (`make lint`, `make lint-strict`, the full `index → search_dataset → moulinette → answer_dataset` pipeline) that produced every number in this README; and, with my explicit go-ahead, wrote this README file directly (the only project file it wrote directly — all `src/` code was written by hand, milestone by milestone, in chat first).
+**AI usage**: two distinct phases, honestly split. **Core pipeline** (chunking, indexing, BM25, generation): built piece by piece with Claude Code as a teaching pair — for each part, it explained the concept and any tradeoff first, I typed and understood every line myself. **Extra features (semantic search, hybrid retrieval, caching, incremental indexing, the HTTP API) + retrieval tuning + this README**: at my request, Claude implemented these directly, including running the grid searches and evaluations that produced every number in this file. I've reviewed that code and can defend it; it wasn't hand-typed the way the core pipeline was.

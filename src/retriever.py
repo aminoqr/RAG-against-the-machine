@@ -8,7 +8,13 @@ from pathlib import Path
 from pydantic import ValidationError
 from tqdm import tqdm
 
+import numpy as np
+from numpy.typing import NDArray
+
 from src.bm25 import Bm25Index, load_bm25_index, score_query
+from src.embeddings import load_embedding_index
+from src.embeddings import score_query as embedding_score_query
+from src.hybrid import BM25_WEIGHT, SEMANTIC_WEIGHT, reciprocal_rank_fusion
 from src.indexer import ChunkIndex, load_index
 from src.models import (
     MinimalSearchResults,
@@ -18,19 +24,20 @@ from src.models import (
 )
 from src.tokenizer import tokenize
 
+# Bonus: hybrid retrieval widens each individual ranker's candidate
+# pool before fusing, so RRF has more than k candidates per side to
+# actually re-rank -- fusing two already-truncated top-k lists would
+# rarely change anything.
+CANDIDATE_POOL = 30
 
-def _search_loaded(
+
+def _rank_bm25(
     query: str, k: int, chunk_index: ChunkIndex, bm25_index: Bm25Index
 ) -> list[MinimalSource]:
-    """Score query against an already-loaded index and return the
-    top-k ranked results. Shared by search() (loads once per call)
-    and search_dataset() (loads onnce for the whole batch)."""
-    if k <= 0 or not query or not query.strip():
-        return []
-
+    """BM25-only ranking: tokenize, score every chunk, keep the top-k
+    that scored above zero."""
     query_tokens = tokenize(query)
     scores = score_query(query_tokens, bm25_index)
-
     ranked = sorted(
         (
             (score, source)
@@ -43,7 +50,67 @@ def _search_loaded(
     return [source for _, source in ranked[:k]]
 
 
-def search(query: str, k: int, processed_dir: Path) -> list[MinimalSource]:
+def _rank_semantic(
+    query: str,
+    k: int,
+    chunk_index: ChunkIndex,
+    embeddings: NDArray[np.float32],
+) -> list[MinimalSource]:
+    """Semantic-only ranking (bonus): cosine similarity in embedding
+    space, top-k above zero."""
+    scores = embedding_score_query(query, embeddings)
+    ranked = sorted(
+        (
+            (score, source)
+            for score, source in zip(scores, chunk_index.chunks)
+            if score > 0
+        ),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    return [source for _, source in ranked[:k]]
+
+
+def search_loaded(
+    query: str,
+    k: int,
+    chunk_index: ChunkIndex,
+    bm25_index: Bm25Index,
+    embeddings: NDArray[np.float32] | None = None,
+) -> list[MinimalSource]:
+    """Score query against an already-loaded index and return the
+    top-k ranked results. Shared by search() (loads once per call)
+    and search_dataset() (loads once for the whole batch).
+
+    Lexical-only (default, mandatory-part behavior) when embeddings is
+    None. When embeddings is given (bonus: hybrid retrieval), fuses
+    the BM25 ranking and the semantic ranking with Reciprocal Rank
+    Fusion instead of returning BM25 alone.
+    """
+    if k <= 0 or not query or not query.strip():
+        return []
+
+    pool = max(k, CANDIDATE_POOL)
+    bm25_ranked = _rank_bm25(query, pool, chunk_index, bm25_index)
+
+    if embeddings is None:
+        return bm25_ranked[:k]
+
+    semantic_ranked = _rank_semantic(query, pool, chunk_index, embeddings)
+    fused = reciprocal_rank_fusion(
+        bm25_ranked,
+        semantic_ranked,
+        weights=(BM25_WEIGHT, SEMANTIC_WEIGHT),
+    )
+    return fused[:k]
+
+
+def search(
+    query: str,
+    k: int,
+    processed_dir: Path,
+    use_semantic: bool = False,
+) -> list[MinimalSource]:
     """Return the top-k chunks most relevant to query.
 
     Args:
@@ -51,18 +118,26 @@ def search(query: str, k: int, processed_dir: Path) -> list[MinimalSource]:
         k: maximum number of results to return.
         processed_dir: directory previously passed to the 'index'
             command's save_index/save_bm25_index (data/processed).
+        use_semantic: bonus flag. When True, also loads the semantic
+            embedding index and fuses it with BM25 via Reciprocal Rank
+            Fusion instead of using BM25 alone.
 
     Returns:
-        Up to k MinimalSource results, ranked by BM25 score
-        descending, restricted to chunks that scored above zero.
+        Up to k MinimalSource results, ranked descending, restricted
+        to chunks that scored above zero in at least one ranker.
     """
     chunk_index = load_index(processed_dir)
     bm25_index = load_bm25_index(processed_dir)
-    return _search_loaded(query, k, chunk_index, bm25_index)
+    embeddings = load_embedding_index(processed_dir) if use_semantic else None
+    return search_loaded(query, k, chunk_index, bm25_index, embeddings)
 
 
 def search_dataset(
-    dataset_path: Path, k: int, save_directory: Path, processed_dir: Path
+    dataset_path: Path,
+    k: int,
+    save_directory: Path,
+    processed_dir: Path,
+    use_semantic: bool = False,
 ) -> Path:
     """Run search for every question in a dataset file, and persist a
     StudentSearchResults JSON under save_directory.
@@ -80,6 +155,7 @@ def search_dataset(
             dataset's filename(e.g. dataset_docs_public.json).
         processed_dir: directory previously written by 'index;
             (data/processed).
+        use_semantic: bonus flag, see search().
 
     Returns:
         The path of the written StudentSearchResults JSON file.
@@ -106,11 +182,12 @@ def search_dataset(
 
     chunk_index = load_index(processed_dir)
     bm25_index = load_bm25_index(processed_dir)
+    embeddings = load_embedding_index(processed_dir) if use_semantic else None
 
     results: list[MinimalSearchResults] = []
     for question in tqdm(dataset.rag_questions, desc="Searching"):
-        sources = _search_loaded(
-            question.question, k, chunk_index, bm25_index
+        sources = search_loaded(
+            question.question, k, chunk_index, bm25_index, embeddings
         )
         results.append(
             MinimalSearchResults(

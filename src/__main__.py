@@ -3,6 +3,8 @@ import fire
 from pathlib import Path
 from src.indexer import build_index, save_index
 from src.bm25 import build_bm25_index, save_bm25_index
+from src.embeddings import build_embedding_index, save_embedding_index
+from src.incremental import build_index_incremental
 from src.retriever import search as run_search
 from src.retriever import search_dataset as run_search_dataset
 from src.evaluator import evaluate as run_evaluate
@@ -12,22 +14,46 @@ from src.generator import answer_dataset as run_answer_dataset
 
 class Cli:
     """Expose the project's commands as CLI subcommands via Python Fire."""
-    def index(self, max_chunk_size: int = 2000) -> None:
+    def index(
+        self,
+        max_chunk_size: int = 2000,
+        build_embeddings: bool = False,
+        incremental: bool = False,
+    ) -> None:
         """Chunk the whole corpus, fit a BM25 index, and persist both.
 
         Args:
             max_chunk_size: maximum number of characters per chunk.
+            build_embeddings: bonus flag. When True, also fits and
+                persists the semantic embedding index (needed for
+                --use_semantic on search/search_dataset). Off by
+                default: it downloads a ~90MB CPU model on first run
+                and roughly doubles indexing time, neither of which
+                the mandatory pipeline needs.
+            incremental: bonus flag. When True, only re-chunks and
+                re-tokenizes files that changed since the last index
+                run (by mtime+size), reusing everything else. Falls
+                back to a full rebuild automatically on the first run.
         """
         corpus_root = Path("data/raw/vllm-0.10.1")
-        try:
-            chunk_index = build_index(corpus_root, max_chunk_size)
-        except ValueError as e:
-            print(f"Indexing failed: {e}")
-            return
+        processed_dir = Path("data/processed")
 
-        chunks_path = save_index(chunk_index, Path("data/processed"))
-        bm25_index = build_bm25_index(chunk_index)
-        bm25_path = save_bm25_index(bm25_index, Path("data/processed"))
+        if incremental:
+            chunk_index, bm25_index, reprocessed = build_index_incremental(
+                corpus_root, max_chunk_size, processed_dir
+            )
+            chunks_path = save_index(chunk_index, processed_dir)
+            bm25_path = save_bm25_index(bm25_index, processed_dir)
+            print(f"Incremental: reprocessed {len(reprocessed)} file(s)")
+        else:
+            try:
+                chunk_index = build_index(corpus_root, max_chunk_size)
+            except ValueError as e:
+                print(f"Indexing failed: {e}")
+                return
+            chunks_path = save_index(chunk_index, processed_dir)
+            bm25_index = build_bm25_index(chunk_index)
+            bm25_path = save_bm25_index(bm25_index, processed_dir)
 
         print(
             f"Indexed {len(chunk_index.chunks)} chunks "
@@ -35,20 +61,38 @@ class Cli:
             f"into {chunks_path} and {bm25_path}"
         )
 
-    def search(self, query: str, k: int = 10) -> None:
+        if build_embeddings:
+            embeddings = build_embedding_index(chunk_index)
+            embeddings_path = save_embedding_index(
+                embeddings, Path("data/processed")
+            )
+            print(
+                f"Built semantic index {embeddings.shape} "
+                f"into {embeddings_path}"
+            )
+
+    def search(
+        self, query: str, k: int = 10, use_semantic: bool = False
+    ) -> None:
         """Return the top-k sources for a single query.
 
         Args:
             query: the question to search for.
             k: maximum number of results to return.
+            use_semantic: bonus flag. Fuse BM25 with the semantic
+                index (Reciprocal Rank Fusion) instead of BM25 alone.
+                Requires `index --build_embeddings` to have been run.
         """
 
         try:
-            results = run_search(query, k, Path("data/processed"))
+            results = run_search(
+                query, k, Path("data/processed"), use_semantic
+            )
         except FileNotFoundError:
             print(
                 "No index found under data/processed/ -- run "
-                "'uv run python -m src index' first."
+                "'uv run python -m src index' first "
+                "(add --build_embeddings if using --use_semantic)."
             )
             return
 
@@ -64,7 +108,11 @@ class Cli:
             )
 
     def search_dataset(
-        self, dataset_path: str, k: int = 10, save_directory: str | None = None
+        self,
+        dataset_path: str,
+        k: int = 10,
+        save_directory: str | None = None,
+        use_semantic: bool = False,
     ) -> None:
         """Run search over a whole dataset and write a
         StudentSearchResults JSON file, scoped under save_directory.
@@ -74,6 +122,7 @@ class Cli:
                 AnsweredQUestions JSON file.
             k: max number of tesults to return per question.
             save_directory: directory to write the output JSON into.
+            use_semantic: bonus flag, see search().
         """
         if not save_directory:
             print("save_directory is required.")
@@ -85,6 +134,7 @@ class Cli:
                 k,
                 Path(save_directory),
                 Path("data/processed"),
+                use_semantic,
             )
         except FileNotFoundError as e:
             print(f"File not found: {e}")
